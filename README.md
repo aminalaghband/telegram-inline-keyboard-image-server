@@ -51,12 +51,12 @@ This repository contains a Python script to send single or multiple images with 
     ```
 
 2. Send a POST request to
-     ```bash
+    ```bash
     pip install requests
     ```
-and
-    ```bash
+    and
 
+    ```bash
     import requests
 
     url = "http://localhost:8090/send_photo/"
@@ -72,6 +72,7 @@ and
     
     print(response.status_code)
     print(response.json()
-```
+    
+    ```
     
     
