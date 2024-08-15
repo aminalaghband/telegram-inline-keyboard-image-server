@@ -56,6 +56,7 @@ This repository contains a Python script to send single or multiple images with 
     ```
 and
     ```bash
+
     import requests
 
     url = "http://localhost:8090/send_photo/"
@@ -71,4 +72,6 @@ and
     
     print(response.status_code)
     print(response.json()
-    ```
+```
+    
+    
