@@ -51,3 +51,24 @@ This repository contains a Python script to send single or multiple images with 
     ```
 
 2. Send a POST request to
+     ```bash
+    pip install requests
+    ```
+and
+    ```bash
+    import requests
+
+    url = "http://localhost:8090/send_photo/"
+    payload = {
+        "chat_id": "-1002072369330",
+        "file_paths": ["3.png"],
+        "camera_name": "Camera1",
+        "text": "Do you see any thing?",
+        "mode": "single"
+    }
+    
+    response = requests.post(url, json=payload)
+    
+    print(response.status_code)
+    print(response.json()
+    ```
