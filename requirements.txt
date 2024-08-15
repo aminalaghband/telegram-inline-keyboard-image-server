@@ -1,0 +1,9 @@
+httpx
+pytz
+python-telegram-bot
+fastapi
+pydantic
+uvicorn
+slack_sdk
+google-auth
+google-api-python-client
