@@ -61,9 +61,9 @@ This repository contains a Python script to send single or multiple images with 
 
     url = "http://localhost:8090/send_photo/"
     payload = {
-        "chat_id": "-1002072369330",
-        "file_paths": ["3.png"],
-        "camera_name": "Camera1",
+        "chat_id": "",
+        "file_paths": ["image.png"],
+        "camera_name": "cam 1s",
         "text": "Do you see any thing?",
         "mode": "single"
     }
