@@ -1,0 +1,173 @@
+import logging
+import os
+import ssl
+import pytz
+import time
+import json
+import multiprocessing
+from datetime import datetime
+from typing import Optional
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile, InputMediaPhoto
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.error import TimedOut
+from fastapi import FastAPI
+from pydantic import BaseModel
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from uvicorn import run
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Environment variables for sensitive information
+my_token = os.getenv('TELEGRAM_TOKEN')
+my_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+slack_token = os.getenv('SLACK_BOT_TOKEN')
+google_creds = os.getenv('GOOGLE_CREDS')
+
+# Timezone
+et_tz = pytz.timezone('US/Eastern')
+
+# FastAPI app
+fastapi_app = FastAPI()
+
+# Pydantic model
+class Item(BaseModel):
+    chat_id: str
+    file_paths: list[str]
+    camera_name: Optional[str] = None
+    text: str
+    mode: str
+
+# Google Drive setup
+creds = Credentials.from_service_account_file(google_creds)
+service = build('drive', 'v3', credentials=creds)
+
+def store_data(key, value):
+    data = {}
+    file_path = 'data_store.json'
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump({}, f)
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        pass
+    data[key] = value.dict()
+    with open(file_path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def retrieve_data(key):
+    try:
+        with open('data_store.json', 'r') as f:
+            data = json.load(f)
+        return data.get(str(key))
+    except json.JSONDecodeError:
+        return None
+
+def upload_to_drive(filename, filepath, mimetype, folder_id=""):
+    file_metadata = {'name': filename, 'parents': [folder_id]}
+    media = MediaFileUpload(filepath, mimetype=mimetype)
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"File ID: {file.get('id')}")
+
+@fastapi_app.get("/health")
+async def health_check():
+    return {"status": "Healthy", "message": "I'm feeling great!"}
+
+@fastapi_app.get("/live")
+async def live_check():
+    current_time = datetime.now().isoformat()
+    return {"status": "Alive", "message": f"I'm alive and kicking at {current_time}!"}
+
+@fastapi_app.get("/")
+async def root(vscodeBrowserReqId: str):
+    return {"vscodeBrowserReqId": vscodeBrowserReqId}
+
+@fastapi_app.post("/send_photo/")
+async def send_photo(item: Item):
+    keyboard = [
+        [InlineKeyboardButton("YES ✅", callback_data="YES"), InlineKeyboardButton("NO 🚫", callback_data="NO")],
+        [InlineKeyboardButton("MAYBE 🤔", callback_data="MAYBE")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    telegram_app = Application.builder().token(my_token).build()
+    now_et = datetime.now(et_tz)
+    _time_et = now_et.strftime("%H:%M:%S")
+    if len(item.file_paths) == 1:
+        file_path = item.file_paths[0]
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as file:
+                media = InputFile(file)
+                caption = item.text
+                message = await telegram_app.bot.send_photo(chat_id=item.chat_id, photo=media, caption=caption, reply_markup=reply_markup)
+                store_data(message.message_id, item)
+        else:
+            logging.error(f"File not found: {file_path}")
+    else:
+        media = [InputMediaPhoto(open(file_path, 'rb')) for file_path in item.file_paths if os.path.exists(file_path)]
+        if not media:
+            return {"error": "No valid media files found."}
+        messages = await telegram_app.bot.send_media_group(chat_id=item.chat_id, media=media)
+        time.sleep(2)
+        caption = item.text
+        message = await telegram_app.bot.send_message(chat_id=item.chat_id, text=caption, reply_markup=reply_markup)
+        store_data(message.message_id, item)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = [
+        [InlineKeyboardButton("YES ✅", callback_data="YES"), InlineKeyboardButton("NO 🚫", callback_data="NO")],
+        [InlineKeyboardButton("MAYBE 🤔", callback_data="MAYBE")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_photo(chat_id=my_chat_id, photo=open(file_path, 'rb'), caption="Please choose:", reply_markup=reply_markup)
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    item_data = retrieve_data(update.callback_query.message.message_id)
+    if item_data:
+        item = Item(**item_data)
+    user = query.from_user
+    username = user.username
+    name = user.first_name
+    now_et = datetime.now(et_tz)
+    _time_et = now_et.strftime("%H:%M:%S")
+    if query.data == "YES":
+        for filepath in item.file_paths:
+            new_file_path = filepath.replace("_box", "")
+            try:
+                upload_to_drive(item.camera_name + "_" + _time_et + ".jpg", new_file_path, 'image/jpg')
+            except Exception as e:
+                logging.error(f"Error uploading to drive: {e}")
+        await query.edit_message_caption(caption=f"{name} with username {username} Selected option: {query.data} and we do not ALERT any body\n {_time_et}\n ")
+    elif query.data == "MAYBE":
+        await query.edit_message_caption(caption=f"{name} with username {username} Selected option: {query.data} and we do not ALERT any body\n {_time_et}\n ")
+    elif query.data == "NO":
+        client = WebClient(token=slack_token)
+        response = client.chat_postMessage(channel='#alerting', text=f'{item.text}.   {_time_et}')
+        await query.edit_message_caption(caption=f"{name} with username {username} Selected option: {query.data} and we have sent an ALERT to Director")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Use /start to test this bot.")
+
+def run_fastapi():
+    run(fastapi_app, host="0.0.0.0", port=8090)
+
+def run_telegram_bot():
+    telegram_app = Application.builder().token(my_token).build()
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CallbackQueryHandler(button))
+    telegram_app.add_handler(CommandHandler("help", help_command))
+    telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    fastapi_process = multiprocessing.Process(target=run_fastapi)
+    fastapi_process.start()
+    telegram_process = multiprocessing.Process(target=run_telegram_bot)
+    telegram_process.start()
